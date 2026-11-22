@@ -7,6 +7,6 @@
   "codeowners": ["@maurobender"],
   "requirements": [],
   "provides": ["podcast"],
-  "documentation": "https://github.com/music-assistant/support/discussions",
+  "documentation": "https://github.com/maurobender/music-assistant-ilpost",
   "multi_instance": true
 }
