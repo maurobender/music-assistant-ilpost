@@ -1,0 +1,26 @@
+# Install with: ../music-assistant-server/.venv/bin/pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-json
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+      - id: check-added-large-files
+  - repo: local
+    hooks:
+      - id: no-env-files
+        name: block .env files
+        entry: .env files hold credentials and must not be committed
+        language: fail
+        files: (^|/)\.env(\..+)?$
+        exclude: \.env\.example$
+      - id: lint
+        name: ruff check and format
+        entry: scripts/check.sh --fast
+        language: system
+        pass_filenames: false
+        types: [python]

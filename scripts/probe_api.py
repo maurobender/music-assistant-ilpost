@@ -2,7 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = ["aiohttp>=3.9"]
 # ///
-"""Manual probe of the (unofficial) Il Post podcast API.
+"""
+Manual probe of the (unofficial) Il Post podcast API.
 
 Reads ILPOST_EMAIL / ILPOST_PASSWORD from the repo's .env, logs in, lists podcasts
 and episodes, prints a playable audio URL and checks whether that URL needs auth.
@@ -33,10 +34,11 @@ UA = "ilpost-ma-probe/0.1"
 
 
 def load_env() -> tuple[str, str]:
+    """Return the Il Post email and password from .env or the environment."""
     env_file = ROOT / ".env"
     if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
+        for raw_line in env_file.read_text().splitlines():
+            line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
@@ -65,23 +67,31 @@ async def get_json(
                 continue
             try:
                 body = await resp.json(content_type=None)
-            except (json.JSONDecodeError, aiohttp.ContentTypeError):
+            except json.JSONDecodeError, aiohttp.ContentTypeError:
                 body = await resp.text()
             return resp.status, body
     raise RuntimeError(f"Too many 429s for {url}")
 
 
-async def probe_audio(session: aiohttp.ClientSession, url: str, headers: dict[str, str], label: str) -> int:
+async def probe_audio(
+    session: aiohttp.ClientSession, url: str, headers: dict[str, str], label: str
+) -> int:
     hdrs = {"User-Agent": UA, "Range": "bytes=0-2047", **headers}
     async with session.get(url, headers=hdrs, allow_redirects=True) as resp:
         chunk = await resp.content.read(2048)
         hist = " -> ".join(str(h.url) for h in resp.history)
-        print(f"  [{label}] HTTP {resp.status}  type={resp.headers.get('Content-Type')}  "
-              f"len={resp.headers.get('Content-Length')}  range={resp.headers.get('Content-Range')}")
+        print(
+            f"  [{label}] HTTP {resp.status}  type={resp.headers.get('Content-Type')}  "
+            f"len={resp.headers.get('Content-Length')}  range={resp.headers.get('Content-Range')}"
+        )
         if hist:
             print(f"    redirects: {hist} -> {resp.url}")
         magic = chunk[:3]
-        kind = "ID3/mp3" if magic == b"ID3" or chunk[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2") else repr(chunk[:16])
+        kind = (
+            "ID3/mp3"
+            if magic == b"ID3" or chunk[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")
+            else repr(chunk[:16])
+        )
         print(f"    first bytes: {kind}")
         return resp.status
 
@@ -95,11 +105,16 @@ async def main() -> None:
     async with aiohttp.ClientSession(headers={"User-Agent": UA}) as session:
         # 1. login
         print("== Login")
-        async with session.post(LOGIN_URL, data={"username": email, "password": password},
-                                headers={"Apikey": APIKEY}) as resp:
+        async with session.post(
+            LOGIN_URL, data={"username": email, "password": password}, headers={"Apikey": APIKEY}
+        ) as resp:
             login = await resp.json(content_type=None)
             print(f"  HTTP {resp.status}")
-        token = (login.get("data") or {}).get("data", {}).get("token") if isinstance(login, dict) else None
+        token = (
+            (login.get("data") or {}).get("data", {}).get("token")
+            if isinstance(login, dict)
+            else None
+        )
         if not token:
             dump("login_error", login)
             sys.exit("  Login failed, see scripts/output/login_error.json")
@@ -124,7 +139,9 @@ async def main() -> None:
         # 3. episodes of first podcast
         pod = plist[0]
         print(f"\n== Episodes of '{pod.get('title')}' ({pod.get('id')})")
-        status, eps = await get_json(session, f"{BASE}/{pod['id']}/", auth, params={"pg": 1, "hits": 5})
+        status, eps = await get_json(
+            session, f"{BASE}/{pod['id']}/", auth, params={"pg": 1, "hits": 5}
+        )
         dump("episodes", eps)
         elist = eps.get("data", [])
         total = ((eps.get("head") or {}).get("data") or {}).get("total")
@@ -134,7 +151,9 @@ async def main() -> None:
         ep = elist[0]
         print(f"  episode keys: {summarize_keys(ep)}")
         for e in elist:
-            print(f"   - {e.get('id')}: {e.get('date')}  {e.get('title')}  ({e.get('milliseconds')} ms)")
+            print(
+                f"   - {e.get('id')}: {e.get('date')}  {e.get('title')}  ({e.get('milliseconds')} ms)"
+            )
 
         # 4. single episode + by-ids
         print("\n== Single episode / by ids")
@@ -144,17 +163,23 @@ async def main() -> None:
         ids = ",".join(str(e["id"]) for e in elist[:3])
         status, many = await get_json(session, f"{BASE}/episodes", auth, params={"ids": ids})
         dump("episodes_by_ids", many)
-        print(f"  by ids ({ids}): HTTP {status}, n={len(many.get('data') or []) if isinstance(many, dict) else '?'}")
+        print(
+            f"  by ids ({ids}): HTTP {status}, n={len(many.get('data') or []) if isinstance(many, dict) else '?'}"
+        )
 
         # 5. same list without token: is the audio URL still there?
         print("\n== Episodes without token")
-        status, eps_anon = await get_json(session, f"{BASE}/{pod['id']}/", anon, params={"pg": 1, "hits": 5})
+        status, eps_anon = await get_json(
+            session, f"{BASE}/{pod['id']}/", anon, params={"pg": 1, "hits": 5}
+        )
         dump("episodes_anon", eps_anon)
         anon_list = eps_anon.get("data", []) if isinstance(eps_anon, dict) else []
         print(f"  HTTP {status}, got {len(anon_list)}")
-        for a, b in zip(anon_list, elist):
-            print(f"   - {b['id']}: raw_url with token={'yes' if b.get('episode_raw_url') else 'no'}, "
-                  f"without={'yes' if a.get('episode_raw_url') else 'no'}, same={a.get('episode_raw_url') == b.get('episode_raw_url')}")
+        for a, b in zip(anon_list, elist, strict=False):
+            print(
+                f"   - {b['id']}: raw_url with token={'yes' if b.get('episode_raw_url') else 'no'}, "
+                f"without={'yes' if a.get('episode_raw_url') else 'no'}, same={a.get('episode_raw_url') == b.get('episode_raw_url')}"
+            )
 
         # 6. audio URL
         print("\n== Audio URL")

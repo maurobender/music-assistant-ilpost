@@ -2,7 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = ["aiohttp>=3.9"]
 # ///
-"""Probe Il Post's per-user episode state (listening progress).
+"""
+Probe Il Post's per-user episode state (listening progress).
 
 Endpoints found in the ilpost.it podcast web app:
   POST {USER}/state/episode            body {"items": [ids]}         -> bulk read
@@ -26,7 +27,7 @@ from typing import Any
 import aiohttp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from probe_api import APIKEY, BASE, LOGIN_URL, UA, dump, load_env  # noqa: E402
+from probe_api import APIKEY, BASE, LOGIN_URL, UA, dump, load_env
 
 USER = "https://api-prod.ilpost.it/user/v1"
 
@@ -57,14 +58,18 @@ async def main() -> None:
         print("== Logged in")
 
         # Recent episodes from the user's most likely listened shows (home: new this week)
-        status, home = await call(session, "GET", "https://api-prod.ilpost.it/podcast/v1/bff/hp", token)
+        status, home = await call(
+            session, "GET", "https://api-prod.ilpost.it/podcast/v1/bff/hp", token
+        )
         eps: list[dict[str, Any]] = []
         for block in home["data"]:
             if isinstance(block.get("data"), list):
                 eps += [e for e in block["data"] if e.get("object") == "episode"]
         ids = list(dict.fromkeys(e["id"] for e in eps))[:40]
-        print(f"  {len(ids)} episode ids from home; 'listened' present in home items: "
-              f"{sum(1 for e in eps if e.get('listened'))}")
+        print(
+            f"  {len(ids)} episode ids from home; 'listened' present in home items: "
+            f"{sum(1 for e in eps if e.get('listened'))}"
+        )
 
         print("\n== Bulk state (POST /state/episode)")
         status, bulk = await call(session, "POST", f"{USER}/state/episode", token, {"items": ids})
@@ -79,13 +84,19 @@ async def main() -> None:
         print("\n== Does the podcast API add 'listened' with a token?")
         pid = eps[0]["parent"]["id"]
         status, plist = await call(session, "GET", f"{BASE}/{pid}/?pg=1&hits=5", token)
-        print(f"  podcast {pid}: listened values = {[e.get('listened') for e in plist.get('data', [])]}")
+        print(
+            f"  podcast {pid}: listened values = {[e.get('listened') for e in plist.get('data', [])]}"
+        )
 
         if write:
             ep_id, secs = write
             print(f"\n== Write position {secs}s on {ep_id}")
             status, res = await call(
-                session, "POST", f"{USER}/state/episode/{ep_id}", token, {"data": {"position": secs}}
+                session,
+                "POST",
+                f"{USER}/state/episode/{ep_id}",
+                token,
+                {"data": {"position": secs}},
             )
             print(f"  HTTP {status}: {json.dumps(res, ensure_ascii=False)[:500]}")
             # Reads lag writes by a few seconds; the stored timestamp is not updated.
