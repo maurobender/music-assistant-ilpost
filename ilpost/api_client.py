@@ -1,16 +1,18 @@
-"""API client for the (unofficial) Il Post podcast API."""
+"""Client for the (unofficial) Il Post podcast API."""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 
@@ -21,26 +23,47 @@ from music_assistant.helpers.throttle_retry import (
     throttle_with_retries,
 )
 
+from .constants import (
+    API_HOST,
+    API_KEY,
+    EPISODES_PAGE_SIZE,
+    HOME_PATH,
+    LOGIN_PATH,
+    MAX_PAGES,
+    PODCAST_PATH,
+    PODCASTS_PAGE_SIZE,
+    STATE_BATCH_SIZE,
+    STATE_PATH,
+    TOKEN_LIFETIME,
+)
+from .models import EpisodeProgress, HomeBlock, IlPostEpisode, IlPostPodcast, parse_id
+
 if TYPE_CHECKING:
     import logging
 
-API_HOST = "https://api-prod.ilpost.it"
-LOGIN_URL = f"{API_HOST}/user/v1/auth/login"
-PODCAST_URL = f"{API_HOST}/podcast/v1/podcast"
-HOME_URL = f"{API_HOST}/podcast/v1/bff/hp"
-STATE_URL = f"{API_HOST}/user/v1/state/episode"
-
-# a fixed key the Il Post web and mobile apps send with every call
-API_KEY = "testapikey"
-# the token carries no expiry, the apps treat it as valid for about two hours
-TOKEN_LIFETIME = 3600 * 2 - 300
-EPISODES_PAGE_SIZE = 500
-PODCASTS_PAGE_SIZE = 200
-STATE_BATCH_SIZE = 200
+type JsonObject = dict[str, Any]
 
 
-class _TokenExpiredError(Exception):
-    """Raised internally when the API rejects the current token."""
+class _TokenRejectedError(Exception):
+    """The API rejected the session token."""
+
+
+def _raise_if_unavailable(response: aiohttp.ClientResponse) -> None:
+    """Raise the retryable error for a rate-limited or failing response."""
+    backoff = parse_retry_after(response.headers.get("Retry-After"))
+    if response.status == 429:
+        raise RateLimited("Il Post is rate limiting requests", backoff_time=backoff)
+    if response.status >= 500:
+        raise ResourceTemporarilyUnavailable(
+            f"Il Post temporarily unavailable ({response.status})", backoff_time=backoff
+        )
+
+
+def _require_id(value: str) -> str:
+    """Return an id that is safe to put in a URL path, or raise MediaNotFoundError."""
+    if (valid := parse_id(value)) is None:
+        raise MediaNotFoundError(f"Invalid Il Post id: {value!r}")
+    return valid
 
 
 class IlPostClient:
@@ -54,171 +77,202 @@ class IlPostClient:
         logger: logging.Logger,
         email: str,
         password: str,
+        api_host: str = API_HOST,
     ) -> None:
         """
         Initialize the client.
 
-        :param session: The aiohttp session to use for requests (typically mass.http_session).
+        :param session: The aiohttp session to use, normally mass.http_session.
         :param logger: The provider logger.
         :param email: The Il Post account email address.
         :param password: The Il Post account password.
+        :param api_host: The API base URL, overridable for tests.
         """
         self.session = session
         self.logger = logger
         self._email = email
         self._password = password
+        self._api_host = api_host.rstrip("/")
         self._token: str | None = None
         self._token_expires = 0.0
         self._login_lock = asyncio.Lock()
-        self.is_subscriber = False
 
     async def login(self) -> None:
-        """Authenticate with Il Post and store the session token."""
-        async with self._login_lock:
-            await self._login()
+        """Log in, raising LoginFailed when the credentials are rejected."""
+        await self._get_token(force=True)
 
-    async def _login(self) -> None:
-        try:
-            async with self.session.post(
-                LOGIN_URL,
-                data={"username": self._email, "password": self._password},
-                headers={"Apikey": API_KEY},
-            ) as response:
-                if response.status == 429 or response.status >= 500:
-                    raise ResourceTemporarilyUnavailable(
-                        f"Il Post login temporarily unavailable ({response.status})",
-                        backoff_time=parse_retry_after(response.headers.get("Retry-After")),
-                    )
-                body = await response.json(loads=json_loads, content_type=None)
-        except aiohttp.ClientError as err:
-            raise ResourceTemporarilyUnavailable(
-                f"Network error contacting Il Post: {err}"
-            ) from err
-        user = ((body or {}).get("data") or {}).get("data") or {}
-        token = user.get("token") if isinstance(user, dict) else None
-        if not token:
-            raise LoginFailed("Il Post login failed, check the email and password")
-        self._token = str(token)
-        self._token_expires = time.monotonic() + TOKEN_LIFETIME
-        self.is_subscriber = bool(user.get("issubscriber"))
-        self.logger.debug("Logged in to Il Post (subscriber: %s)", self.is_subscriber)
+    async def get_podcasts(self) -> list[IlPostPodcast]:
+        """Return every podcast published by Il Post."""
+        items = await self._get_paged(f"{PODCAST_PATH}/", PODCASTS_PAGE_SIZE)
+        return [p for item in items if (p := IlPostPodcast.from_api(item)) is not None]
 
-    async def get_podcasts(self) -> list[dict[str, Any]]:
-        """Return all podcasts published by Il Post."""
-        return await self._get_paged(f"{PODCAST_URL}/", PODCASTS_PAGE_SIZE)
-
-    async def get_episodes(self, podcast_id: str) -> list[dict[str, Any]]:
+    async def get_episodes(self, podcast_id: str) -> list[IlPostEpisode]:
         """
-        Return all episodes of a podcast, newest first.
+        Return every episode of a podcast, newest first.
 
         :param podcast_id: The Il Post podcast id.
         """
-        return await self._get_paged(f"{PODCAST_URL}/{podcast_id}/", EPISODES_PAGE_SIZE)
+        path = f"{PODCAST_PATH}/{_require_id(podcast_id)}/"
+        items = await self._get_paged(path, EPISODES_PAGE_SIZE)
+        return [e for item in items if (e := IlPostEpisode.from_api(item)) is not None]
 
-    async def get_episode(self, podcast_id: str, episode_id: str) -> dict[str, Any]:
+    async def get_episode(self, podcast_id: str, episode_id: str) -> IlPostEpisode:
         """
         Return a single episode.
 
         :param podcast_id: The Il Post podcast id.
         :param episode_id: The Il Post episode id.
         """
-        body = await self._request("GET", f"{PODCAST_URL}/{podcast_id}/{episode_id}/")
-        data = body.get("data")
+        path = f"{PODCAST_PATH}/{_require_id(podcast_id)}/{_require_id(episode_id)}/"
+        data = (await self._request("GET", path)).get("data")
         if isinstance(data, list):
             data = data[0] if data else None
-        if not isinstance(data, dict) or not data.get("id"):
+        if not isinstance(data, Mapping) or (episode := IlPostEpisode.from_api(data)) is None:
             raise MediaNotFoundError(f"Il Post episode {episode_id} not found")
-        return data
+        return episode
 
-    async def get_home(self) -> list[dict[str, Any]]:
-        """Return the blocks (featured, new this week, ...) of the podcast home page."""
-        body = await self._request("GET", HOME_URL)
-        return [block for block in body.get("data") or [] if isinstance(block, dict)]
+    async def get_home(self) -> list[HomeBlock]:
+        """Return the blocks of the podcast home page."""
+        data = (await self._request("GET", HOME_PATH)).get("data")
+        return [
+            block
+            for item in (data if isinstance(data, list) else [])
+            if isinstance(item, Mapping) and (block := HomeBlock.from_api(item)) is not None
+        ]
 
-    async def get_positions(self, episode_ids: list[str]) -> dict[str, tuple[int, int]]:
+    async def get_progress(self, episode_ids: list[str]) -> dict[str, EpisodeProgress]:
         """
-        Return the stored (position, duration) in seconds per episode id.
+        Return the stored listening progress per episode id.
 
-        Episodes without a stored position are left out.
+        Episodes without stored progress are left out.
 
         :param episode_ids: The Il Post episode ids to look up.
         """
-        result: dict[str, tuple[int, int]] = {}
-        for start in range(0, len(episode_ids), STATE_BATCH_SIZE):
-            batch = [int(ep_id) for ep_id in episode_ids[start : start + STATE_BATCH_SIZE]]
-            body = await self._request("POST", STATE_URL, json={"items": batch})
-            for entry in body.get("data") or []:
-                item = (entry or {}).get("item") or {}
-                state = item.get("data") or {}
-                if item.get("id") is None or not isinstance(state, dict):
-                    continue
-                result[str(item["id"])] = (
-                    int(state.get("position") or 0),
-                    int(state.get("duration") or 0),
-                )
-        return result
+        ids = [int(_require_id(episode_id)) for episode_id in episode_ids]
+        progress: dict[str, EpisodeProgress] = {}
+        for start in range(0, len(ids), STATE_BATCH_SIZE):
+            body = await self._request(
+                "POST", STATE_PATH, json={"items": ids[start : start + STATE_BATCH_SIZE]}
+            )
+            entries = body.get("data")
+            for entry in entries if isinstance(entries, list) else []:
+                if isinstance(entry, Mapping) and (parsed := EpisodeProgress.from_api(entry)):
+                    progress[parsed[0]] = parsed[1]
+        return progress
 
     async def set_position(self, episode_id: str, position: int) -> None:
         """
-        Store the listening position of an episode on the user's account.
+        Store the listening position of an episode.
 
         :param episode_id: The Il Post episode id.
         :param position: The position in seconds.
         """
         await self._request(
-            "POST", f"{STATE_URL}/{episode_id}", json={"data": {"position": int(position)}}
+            "POST",
+            f"{STATE_PATH}/{_require_id(episode_id)}",
+            json={"data": {"position": max(int(position), 0)}},
         )
 
-    async def _get_paged(self, url: str, page_size: int) -> list[dict[str, Any]]:
-        """Return every item of a paged listing endpoint."""
-        items: list[dict[str, Any]] = []
-        page = 1
-        while True:
-            body = await self._request("GET", url, params={"pg": page, "hits": page_size})
-            batch = [item for item in body.get("data") or [] if isinstance(item, dict)]
+    async def _get_paged(self, path: str, page_size: int) -> list[JsonObject]:
+        """Return every item of a paged listing."""
+        items: list[JsonObject] = []
+        for page in range(1, MAX_PAGES + 1):
+            body = await self._request("GET", path, params={"pg": page, "hits": page_size})
+            data = body.get("data")
+            batch = [
+                item for item in (data if isinstance(data, list) else []) if isinstance(item, dict)
+            ]
             items.extend(batch)
-            total = (((body.get("head") or {}).get("data")) or {}).get("total") or 0
-            if not batch or len(items) >= int(total):
+            head = body.get("head")
+            head_data = head.get("data") if isinstance(head, Mapping) else None
+            total = head_data.get("total") if isinstance(head_data, Mapping) else None
+            if isinstance(total, int):
+                if not batch or len(items) >= total:
+                    return items
+            elif len(batch) < page_size:
                 return items
-            page += 1
+        self.logger.warning("Stopped reading %s after %d pages", path, MAX_PAGES)
+        return items
 
-    async def _request(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
-        """Perform an authenticated request, logging in again once when the token expired."""
-        if not self._token or time.monotonic() > self._token_expires:
-            await self.login()
-        try:
-            return await self._throttled_request(method, url, **kwargs)
-        except _TokenExpiredError:
-            self.logger.debug("Il Post token rejected, logging in again")
-            await self.login()
-        try:
-            return await self._throttled_request(method, url, **kwargs)
-        except _TokenExpiredError as err:
-            raise LoginFailed("Il Post rejected the session token after a fresh login") from err
+    async def _get_token(self, force: bool = False, rejected: str | None = None) -> str:
+        """
+        Return a valid session token, logging in when there is none.
 
-    @throttle_with_retries
-    async def _throttled_request(self, /, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
-        """Perform a single request and return the decoded JSON body."""
-        headers = {"Apikey": API_KEY, "Token": self._token or ""}
+        :param force: Log in even when the current token looks valid.
+        :param rejected: A token the API rejected; a newer one is reused instead of logging in.
+        """
+        async with self._login_lock:
+            token_is_fresh = self._token is not None and time.monotonic() < self._token_expires
+            if self._token and token_is_fresh and not force and self._token != rejected:
+                return self._token
+            self._token = await self._login()
+            self._token_expires = time.monotonic() + TOKEN_LIFETIME
+            return self._token
+
+    async def _login(self) -> str:
+        """Log in and return the session token."""
+        url = f"{self._api_host}{LOGIN_PATH}"
+        credentials = {"username": self._email, "password": self._password}
         try:
-            async with self.session.request(method, url, headers=headers, **kwargs) as response:
-                if response.status in (401, 403):
-                    raise _TokenExpiredError
-                if response.status == 404:
-                    raise MediaNotFoundError(f"Il Post resource not found: {url}")
-                if response.status == 429 or response.status >= 500:
-                    raise ResourceTemporarilyUnavailable(
-                        f"Il Post temporarily unavailable ({response.status})",
-                        backoff_time=parse_retry_after(response.headers.get("Retry-After")),
-                    )
-                if response.status != 200:
-                    text = await response.text()
+            async with self.session.post(
+                url, data=credentials, headers={"Apikey": API_KEY}
+            ) as response:
+                _raise_if_unavailable(response)
+                try:
+                    body = await response.json(loads=json_loads, content_type=None)
+                except ValueError as err:
                     raise ProviderUnavailableError(
-                        f"Il Post request to {url} failed ({response.status}): {text[:200]}"
-                    )
-                body = await response.json(loads=json_loads, content_type=None)
+                        f"Il Post login returned an invalid response ({response.status})"
+                    ) from err
         except aiohttp.ClientError as err:
             raise ResourceTemporarilyUnavailable(
                 f"Network error contacting Il Post: {err}"
             ) from err
-        return cast("dict[str, Any]", body) if isinstance(body, dict) else {}
+        outer = body.get("data") if isinstance(body, Mapping) else None
+        user = outer.get("data") if isinstance(outer, Mapping) else None
+        token = user.get("token") if isinstance(user, Mapping) else None
+        if not isinstance(token, str) or not token:
+            raise LoginFailed("Il Post login failed, check the email and password")
+        self.logger.debug("Logged in to Il Post")
+        return token
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> JsonObject:
+        """Perform an authenticated request, logging in again once if the token is rejected."""
+        token = await self._get_token()
+        try:
+            return await self._send(method, path, token, **kwargs)
+        except _TokenRejectedError:
+            self.logger.debug("Il Post rejected the session token, logging in again")
+        token = await self._get_token(rejected=token)
+        try:
+            return await self._send(method, path, token, **kwargs)
+        except _TokenRejectedError as err:
+            raise LoginFailed("Il Post rejected a freshly issued session token") from err
+
+    @throttle_with_retries
+    async def _send(self, /, method: str, path: str, token: str, **kwargs: Any) -> JsonObject:
+        """Perform a single request and return its JSON body."""
+        url = f"{self._api_host}{path}"
+        headers = {"Apikey": API_KEY, "Token": token}
+        try:
+            async with self.session.request(method, url, headers=headers, **kwargs) as response:
+                if response.status in (401, 403):
+                    raise _TokenRejectedError
+                if response.status == 404:
+                    raise MediaNotFoundError(f"Il Post resource not found: {path}")
+                _raise_if_unavailable(response)
+                if response.status != 200:
+                    raise ProviderUnavailableError(
+                        f"Il Post request to {path} failed ({response.status})"
+                    )
+                try:
+                    body = await response.json(loads=json_loads, content_type=None)
+                except ValueError as err:
+                    raise ProviderUnavailableError(
+                        f"Il Post returned invalid JSON for {path}"
+                    ) from err
+        except aiohttp.ClientError as err:
+            raise ResourceTemporarilyUnavailable(
+                f"Network error contacting Il Post: {err}"
+            ) from err
+        return body if isinstance(body, dict) else {}
