@@ -1,92 +1,143 @@
-# Il Post para Music Assistant
+# Il Post for Music Assistant
 
-Provider de [Music Assistant](https://music-assistant.io) (MA) para escuchar los podcasts de
-[Il Post](https://www.ilpost.it/podcasts/) con tu cuenta.
+A [Music Assistant](https://music-assistant.io) provider for the podcasts of
+[Il Post](https://www.ilpost.it/podcasts/), using your Il Post account.
 
-- **Biblioteca:** los ~80 podcasts de Il Post, con todos sus episodios.
-- **Reproducción:** cada episodio es un MP3 directo (no necesita token), con avance y retroceso.
-- **Progreso sincronizado:** MA lee de Il Post hasta dónde escuchaste cada episodio y le
-  manda la posición mientras escuchás, así que podés seguir en la app o en ilpost.it.
-- **Búsqueda** de podcasts por título, autor o descripción.
-- **Recomendaciones:** los bloques de la home de podcasts de Il Post ("Nuovi episodi",
+- **Library**: every Il Post podcast (about 80) with all of its episodes.
+- **Playback**: episodes are plain MP3 files (no token needed), with seeking.
+- **Progress sync**: listening progress is read from and written back to your Il Post
+  account, so you can switch between Music Assistant, the Il Post app and ilpost.it.
+- **Search**: podcasts by title, author or description.
+- **Recommendations**: the blocks of the Il Post podcast home page ("Nuovi episodi",
   "In evidenza", "Archivio", ...).
 
-Usa una API no oficial (la misma que usan la web y las apps de Il Post), así que puede dejar
-de funcionar si Il Post la cambia.
+The provider uses an unofficial API (the one the Il Post website and apps use), so it may break
+if Il Post changes it. Transcripts are not supported: the API only says whether an episode has
+one, not its text.
 
-## Estructura
+## Layout
 
 ```
-ilpost/           el provider (se copia o monta en music_assistant/providers/ilpost)
-  __init__.py     provider: biblioteca, episodios, stream, búsqueda, home, progreso
-  api_client.py   cliente HTTP de la API de Il Post (login, reintentos, paginado)
-  setup_flow.py   formulario de alta (email y contraseña)
+ilpost/             the provider, i.e. music_assistant/providers/ilpost in the server
+  __init__.py       provider: library, episodes, stream, search, home, progress sync
+  api_client.py     HTTP client: login, token refresh, retries, paging, id validation
+  models.py         typed models of the API responses, parsed defensively
+  parsers.py        conversion of those models into Music Assistant media items
+  helpers.py        search matching and progress sync decisions
+  constants.py      endpoints, page sizes and thresholds
+  setup_flow.py     setup form (email and password)
   manifest.json, strings.json, icon.svg, icon_monochrome.svg
+tests/              unit tests (fake Il Post server, mocked Music Assistant)
 scripts/
-  probe_api.py      prueba la API: login, podcasts, episodios, URL de audio
-  probe_state.py    prueba la API de progreso (solo lectura salvo con --write)
-  test_provider.py  corre el provider contra la API real, sin levantar MA
+  dev_setup.sh      prepares the development environment
+  check.sh          runs every lint, type check and test
+  live_check.py     runs the provider against the real API with your account
+  probe_api.py      raw API exploration: login, podcasts, episodes, audio URL
+  probe_state.py    raw API exploration of the progress endpoints
 ```
 
-## Instalación en MA con Docker
+## Install on Music Assistant running in Docker
 
-El provider usa la API de setup flows de MA (`setup_flow.py`), que está en el `main` actual
-del servidor. Necesitás una imagen de MA de esa época o más nueva: con una versión vieja el
-provider no aparece o falla al cargarse.
+The provider uses Music Assistant's setup flow API (`setup_flow.py`), which is only in recent
+server versions. On an older image the provider does not show up or fails to load.
 
-1. Copiá la carpeta `ilpost/` al host donde corre el contenedor, por ejemplo a
+1. Copy the `ilpost/` folder to the Docker host, for example to
    `/opt/music-assistant/custom_providers/ilpost`.
 
-2. Averiguá dónde están los providers dentro del contenedor (cambiá `music-assistant` por el
-   nombre de tu contenedor):
+2. Find where the providers live inside the container (replace `music-assistant` with your
+   container name):
 
    ```bash
    docker exec music-assistant python3 -c "import music_assistant.providers as p; print(p.__path__[0])"
    ```
 
-   Va a imprimir algo como `/app/venv/lib/python3.14/site-packages/music_assistant/providers`.
+   It prints something like `/app/venv/lib/python3.14/site-packages/music_assistant/providers`.
 
-3. Montá la carpeta en ese directorio como `ilpost`. Con docker compose:
+3. Mount the folder there as `ilpost`. With docker compose:
 
    ```yaml
    services:
      music-assistant:
        image: ghcr.io/music-assistant/server:latest
-       # ... lo que ya tengas ...
+       # ... your existing settings ...
        volumes:
          - ./data:/data
          - /opt/music-assistant/custom_providers/ilpost:/app/venv/lib/python3.14/site-packages/music_assistant/providers/ilpost:ro
    ```
 
-   Con `docker run`, el equivalente es
-   `-v /opt/music-assistant/custom_providers/ilpost:<ruta del paso 2>/ilpost:ro`.
+   With `docker run`, add `-v /opt/music-assistant/custom_providers/ilpost:<path from step 2>/ilpost:ro`.
 
-4. Recreá el contenedor para que tome el volumen:
+4. Recreate the container so it picks up the volume:
 
    ```bash
    docker compose up -d --force-recreate music-assistant
    ```
 
-5. En MA: **Settings → Providers → Add provider → Il Post**, cargá tu email y contraseña de
-   Il Post. Después de la primera sincronización de la biblioteca aparecen los podcasts.
+5. In Music Assistant open **Settings → Providers → Add provider → Il Post** and enter your
+   Il Post email and password. The podcasts appear after the first library sync.
 
-Al actualizar la imagen de MA, el montaje se mantiene. Si la ruta del paso 2 cambia (por
-ejemplo con una versión nueva de Python), hay que ajustarla.
+The mount survives image updates. If the path from step 2 changes (for example with a new
+Python version), update the mount.
 
-Para ver errores del provider:
+To see the provider's logs:
 
 ```bash
 docker logs -f music-assistant 2>&1 | grep -i ilpost
 ```
 
-Para más detalle, poné el log level del provider en **Debug** desde su configuración en MA.
+For more detail, set the provider's log level to **Debug** in its settings.
 
-## Cómo probarlo localmente
+The repository already has the layout of Music Assistant's community catalog (the provider in
+a top-level folder named after its domain), which is the way to distribute it without a
+volume mount once it is listed there.
 
-Credenciales: copiá `.env.example` a `.env` y completá `ILPOST_EMAIL` e `ILPOST_PASSWORD`.
-`.env` está en `.gitignore`.
+## Development
 
-### Contra la API, sin MA (solo necesita [uv](https://docs.astral.sh/uv/))
+Everything runs inside a Music Assistant server checkout, so the provider is linted, typed and
+tested against the real server code. [uv](https://docs.astral.sh/uv/) is required.
+
+```bash
+scripts/dev_setup.sh
+```
+
+This clones the server into `../music-assistant-server` (set `MA_DIR` to use another path),
+creates its virtualenv with the lint and test tools, and links `ilpost/` into it as
+`music_assistant/providers/ilpost`. The server's `aiolibdatachannel` dependency is skipped
+because it does not build on macOS and the provider does not need it.
+
+Then run every check:
+
+```bash
+scripts/check.sh
+```
+
+It runs, in order:
+
+- ruff lint and format on the whole repository, with a config that mirrors the server's;
+- ruff and mypy on the provider with the server's own config (mypy checks the whole server
+  package there; only errors in the provider fail the run);
+- the server's provider checks (manifest, translatable labels, config entries);
+- mypy on the tests and scripts;
+- pytest with coverage.
+
+`scripts/check.sh --fast` runs only the lint and format step. To run it before every commit,
+together with checks that block committing `.env` files and private keys:
+
+```bash
+../music-assistant-server/.venv/bin/pre-commit install
+```
+
+### Checks against the real API
+
+Copy `.env.example` to `.env` and fill in `ILPOST_EMAIL` and `ILPOST_PASSWORD`. `.env` is
+git-ignored.
+
+```bash
+../music-assistant-server/.venv/bin/python scripts/live_check.py
+```
+
+`live_check.py` runs the provider end to end and never writes to your account: position
+writes are captured instead of sent. The probe scripts only need uv:
 
 ```bash
 uv run scripts/probe_api.py
@@ -96,58 +147,26 @@ uv run scripts/probe_api.py
 uv run scripts/probe_state.py
 ```
 
-Las respuestas crudas quedan en `scripts/output/` (ignorado por git).
-`probe_state.py --write EPISODE_ID SEGUNDOS` guarda una posición en tu cuenta.
+Their raw responses are saved in `scripts/output/` (git-ignored).
+`probe_state.py --write EPISODE_ID SECONDS` stores a position on your account.
 
-### El provider, con el código de MA
+## API notes
 
-1. Cloná el servidor de MA y creá su entorno. `aiolibdatachannel` no compila en macOS y el
-   provider no la usa, así que se instala todo menos esa dependencia:
+- Login: `POST https://api-prod.ilpost.it/user/v1/auth/login` with the form fields `username`
+  and `password`. Every request sends `Apikey: testapikey` and `Token: <token>`. The token is
+  renewed every two hours and after a 401.
+- Podcasts and episodes: `/podcast/v1/podcast/...`, paged with `pg` and `hits`. Home page:
+  `/podcast/v1/bff/hp`.
+- Progress: `POST /user/v1/state/episode` with `{"items": [ids]}` reads positions, and
+  `POST /user/v1/state/episode/{id}` with `{"data": {"position": seconds}}` stores one. Reads
+  reflect a write only after a few seconds. There is no "played" flag: the provider treats an
+  episode as listened from 95% and stores the final position when it ends.
+- Audio (`episode_raw_url`) is a public MP3 under `www.ilpost.it/wp-content/uploads/`.
 
-   ```bash
-   git clone https://github.com/music-assistant/server.git ../music-assistant-server
-   ```
+## Security notes
 
-   ```bash
-   cd ../music-assistant-server && uv venv -p 3.14 .venv && python3 -c 'import tomllib; print("\n".join(d for d in tomllib.load(open("pyproject.toml","rb"))["project"]["dependencies"] if not d.startswith("aiolibdatachannel")))' > /tmp/ma-reqs.txt && uv pip install -p .venv -r /tmp/ma-reqs.txt mypy==2.3.0 ruff==0.16.5 && uv pip install -p .venv --no-deps -e .
-   ```
-
-2. Enlazá el provider dentro de MA:
-
-   ```bash
-   ln -sfn "$PWD/../music-assistant-ilpost/ilpost" music_assistant/providers/ilpost
-   ```
-
-3. Corré el provider contra la API real (no escribe nada en tu cuenta: las escrituras de
-   progreso se capturan):
-
-   ```bash
-   cd ../music-assistant-ilpost && ../music-assistant-server/.venv/bin/python scripts/test_provider.py
-   ```
-
-4. Lint con la configuración de MA (desde `music-assistant-server`):
-
-   ```bash
-   .venv/bin/ruff check music_assistant/providers/ilpost/ && .venv/bin/ruff format --check music_assistant/providers/ilpost/
-   ```
-
-   ```bash
-   .venv/bin/mypy music_assistant/providers/ilpost/ 2>&1 | grep -E "ilpost|^Success"
-   ```
-
-   mypy revisa todo el paquete de MA; los errores de otros providers (por dependencias no
-   instaladas) se pueden ignorar. No tiene que aparecer ninguna línea con `ilpost`.
-
-## Detalles de la API
-
-- Login: `POST https://api-prod.ilpost.it/user/v1/auth/login` (form `username`, `password`).
-  Todas las llamadas llevan `Apikey: testapikey` y `Token: <token>`. El token se renueva cada
-  ~2 h y ante un 401.
-- Podcasts y episodios: `https://api-prod.ilpost.it/podcast/v1/podcast/...`, paginados con
-  `pg` y `hits`. Home: `/podcast/v1/bff/hp`.
-- Progreso: `POST /user/v1/state/episode` con `{"items": [ids]}` lee posiciones;
-  `POST /user/v1/state/episode/{id}` con `{"data": {"position": segundos}}` las guarda. La
-  lectura tarda unos segundos en reflejar una escritura. No hay marca de "escuchado": el
-  provider considera escuchado un episodio al 95 % y, al terminarlo, guarda la posición
-  final.
-- El audio (`episode_raw_url`) es un MP3 público en `www.ilpost.it/wp-content/uploads/...`.
+- Credentials are stored by Music Assistant (the password as a secure string) and only sent to
+  the Il Post login endpoint. The session token is kept in memory.
+- Ids from Music Assistant are validated as plain digits before they go into a URL path, so a
+  crafted item id cannot reach other API endpoints with your token.
+- Only absolute `http(s)` URLs from the API are used for streams and images.
