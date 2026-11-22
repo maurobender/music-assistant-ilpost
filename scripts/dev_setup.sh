@@ -30,6 +30,10 @@ tools = project["project"]["optional-dependencies"]["test"]
 wanted = ("mypy", "ruff", "pytest", "pytest-aiohttp", "pytest-cov", "pytest-timeout", "pre-commit")
 print("\n".join(d for d in deps if not d.startswith("aiolibdatachannel")))
 print("\n".join(t for t in tools if t.split("=")[0].split("[")[0] in wanted))
+# older servers import hass-client from the core but only list it in requirements_all.txt
+if not any(d.startswith("hass-client") for d in deps):
+    with open("requirements_all.txt") as f:
+        print("\n".join(line.strip() for line in f if line.startswith("hass-client")))
 EOF
 uv pip install -q -p .venv -r "$REQS"
 uv pip install -q -p .venv --no-deps -e .

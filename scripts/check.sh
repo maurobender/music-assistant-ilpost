@@ -17,6 +17,18 @@ fi
 
 step() { printf '\n== %s\n' "$1"; }
 
+# Fail when mypy reports an error in one of our files. mypy also reports errors in the server
+# packages it follows, which are ignored. Its output is captured first: with pipefail, piping
+# it into grep would take mypy's exit status instead of grep's.
+mypy_only() {
+  local pattern="$1" output
+  shift
+  output="$("$BIN/mypy" "$@" 2>&1 || true)"
+  if grep -E "$pattern" <<<"$output"; then
+    exit 1
+  fi
+}
+
 cd "$REPO_DIR"
 step "ruff (repository config)"
 "$BIN/ruff" check --no-fix ilpost tests scripts
@@ -30,9 +42,7 @@ step "ruff (Music Assistant config)"
 
 step "mypy (Music Assistant config)"
 # the server config checks the whole package; only errors in this provider count
-if "$BIN/mypy" music_assistant/providers/ilpost/ 2>&1 | grep -E "providers/ilpost/"; then
-  exit 1
-fi
+mypy_only "providers/ilpost/" music_assistant/providers/ilpost/
 echo "no errors in the provider"
 
 step "Music Assistant provider checks"
@@ -43,10 +53,7 @@ echo "passed"
 
 cd "$REPO_DIR"
 step "mypy (tests and scripts)"
-if MYPYPATH="$MA_DIR" "$BIN/mypy" --config-file pyproject.toml tests scripts/live_check.py 2>&1 \
-  | grep -E "^(tests|scripts)/"; then
-  exit 1
-fi
+MYPYPATH="$MA_DIR" mypy_only "^(tests|scripts)/" --config-file pyproject.toml tests scripts/live_check.py
 echo "no errors in the tests and scripts"
 
 step "pytest"

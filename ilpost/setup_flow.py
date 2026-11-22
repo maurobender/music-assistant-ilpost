@@ -30,7 +30,8 @@ _ENTRIES = (
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: collect the credentials and create the provider."""
-    errors: dict[str, str | SetupFlowError] | None = None
+    # plain strings work on every server version with setup flows, 2.10.13 included
+    errors: dict[str, str] | None = None
     setup_data = dict(session.context.setup_data)
     while True:
         entries = [
@@ -42,4 +43,4 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err}
+            errors = {"base": err.translation_key or str(err)}
