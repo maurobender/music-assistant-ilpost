@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # weekly run against the latest server code, to catch upstream changes that break the provider
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      ma_ref:
+        description: Music Assistant server branch or tag to test against
+        default: dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, type check and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MA_DIR: ${{ github.workspace }}/../music-assistant-server
+      MA_REF: ${{ inputs.ma_ref || 'dev' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: scripts/dev_setup.sh
+
+      - name: Set up the Music Assistant server
+        run: scripts/dev_setup.sh
+
+      - name: Run the checks
+        run: scripts/check.sh
+
+      - name: Run the pre-commit hooks
+        run: |
+          "$MA_DIR/.venv/bin/pre-commit" run --all-files --show-diff-on-failure

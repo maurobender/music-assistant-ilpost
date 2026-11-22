@@ -127,6 +127,16 @@ together with checks that block committing `.env` files and private keys:
 ../music-assistant-server/.venv/bin/pre-commit install
 ```
 
+### Continuous integration
+
+`.github/workflows/ci.yml` runs `scripts/dev_setup.sh`, `scripts/check.sh` and the pre-commit
+hooks on every push to `main` and on every pull request. It tests against the server's `dev`
+branch, and a weekly scheduled run catches server changes that break the provider. To test
+against another server branch or tag, start the workflow by hand and set `ma_ref`. Locally,
+`MA_REF=<branch or tag> scripts/dev_setup.sh` does the same for a new checkout.
+
+The checks against the real API are not part of CI, since they need an Il Post account.
+
 ### Checks against the real API
 
 Copy `.env.example` to `.env` and fill in `ILPOST_EMAIL` and `ILPOST_PASSWORD`. `.env` is

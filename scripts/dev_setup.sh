@@ -2,16 +2,18 @@
 # Prepare the development environment: a Music Assistant server checkout with a virtualenv
 # that has the server, the lint tools and pytest, and the provider linked into it.
 #
-#   scripts/dev_setup.sh            # uses ../music-assistant-server
-#   MA_DIR=/path/to/server scripts/dev_setup.sh
+#   scripts/dev_setup.sh            # clones the server's dev branch into ../music-assistant-server
+#   MA_DIR=/path/to/server MA_REF=<branch or tag> scripts/dev_setup.sh
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MA_DIR="${MA_DIR:-$REPO_DIR/../music-assistant-server}"
+MA_REF="${MA_REF:-dev}"
 
 if [[ ! -d "$MA_DIR/.git" ]]; then
-  git clone --depth 1 https://github.com/music-assistant/server.git "$MA_DIR"
+  git clone --depth 1 --branch "$MA_REF" https://github.com/music-assistant/server.git "$MA_DIR"
 fi
+echo "Music Assistant server at $(git -C "$MA_DIR" rev-parse --short HEAD)"
 
 cd "$MA_DIR"
 [[ -d .venv ]] || uv venv -p 3.14 .venv
