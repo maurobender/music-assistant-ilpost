@@ -88,6 +88,8 @@ async def main() -> None:
                 session, "POST", f"{USER}/state/episode/{ep_id}", token, {"data": {"position": secs}}
             )
             print(f"  HTTP {status}: {json.dumps(res, ensure_ascii=False)[:500]}")
+            # Reads lag writes by a few seconds; the stored timestamp is not updated.
+            await asyncio.sleep(8)
             status, back = await call(session, "GET", f"{USER}/state/episode/{ep_id}", token)
             print(f"  read back: HTTP {status}: {json.dumps(back, ensure_ascii=False)[:500]}")
 
