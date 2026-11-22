@@ -38,8 +38,8 @@ scripts/
 
 ## Install on Music Assistant running in Docker
 
-The provider uses Music Assistant's setup flow API (`setup_flow.py`), which is only in recent
-server versions. On an older image the provider does not show up or fails to load.
+The provider needs server 2.10.13 or later (the oldest version tested; it needs the setup flow API,
+`setup_flow.py`). On an older image it may not show up or may fail to load.
 
 1. Copy the `ilpost/` folder to the Docker host, for example to
    `/opt/music-assistant/custom_providers/ilpost`.
@@ -87,9 +87,47 @@ docker logs -f music-assistant 2>&1 | grep -i ilpost
 
 For more detail, set the provider's log level to **Debug** in its settings.
 
-The repository already has the layout of Music Assistant's community catalog (the provider in
-a top-level folder named after its domain), which is the way to distribute it without a
-volume mount once it is listed there.
+## Install on the Home Assistant add-on
+
+The provider works with the stable add-on (server 2.10.13 and later; CI tests it against the
+latest release) and with the beta add-on. The add-on runs the same server image as Docker,
+but an add-on cannot mount extra folders. The provider has to be copied into the add-on's container, and **the copy is lost
+whenever the Supervisor recreates that container**: when the add-on is restarted or updated
+from Home Assistant, and when the host reboots. After any of those, repeat steps 3 and 4.
+Your provider settings are kept in the meantime; the provider just shows as unavailable until
+it is copied back.
+
+1. Install the **Advanced SSH & Web Terminal** add-on (from the community add-ons) and turn
+   off its **Protection mode**, so it can run `docker`. Open its terminal.
+
+2. Copy the `ilpost/` folder to `/share/ilpost` on Home Assistant, for example with the Samba
+   share add-on or `scp`. `/share` survives reboots and updates, so it is the copy to restore
+   from.
+
+3. Copy the provider into the Music Assistant container. The stable add-on's container is
+   `addon_d5369777_music_assistant`; the beta one is `addon_d5369777_music_assistant_beta`
+   (`docker ps --format '{{.Names}}' | grep music_assistant` lists it):
+
+   ```bash
+   C=addon_d5369777_music_assistant
+   P=$(docker exec "$C" python3 -c "import music_assistant.providers as p; print(p.__path__[0])")
+   docker cp /share/ilpost "$C:$P/ilpost"
+   ```
+
+4. Restart the container with `docker restart`, which keeps the copied files. Restarting the
+   add-on from the Home Assistant UI would recreate the container and drop them.
+
+   ```bash
+   docker restart addon_d5369777_music_assistant
+   ```
+
+5. In Music Assistant open **Settings → Providers → Add provider → Il Post** and enter your
+   Il Post email and password.
+
+The lasting way to install a custom provider on the add-on is Music Assistant's community
+catalog, which installs providers into the add-on's data folder. This repository already has
+the layout the catalog expects (the provider in a top-level folder named after its domain);
+it needs to be listed in the catalog's registry first.
 
 ## Development
 
@@ -130,9 +168,10 @@ together with checks that block committing `.env` files and private keys:
 ### Continuous integration
 
 `.github/workflows/ci.yml` runs `scripts/dev_setup.sh`, `scripts/check.sh` and the pre-commit
-hooks on every push to `main` and on every pull request. It tests against the server's `dev`
-branch, and a weekly scheduled run catches server changes that break the provider. To test
-against another server branch or tag, start the workflow by hand and set `ma_ref`. Locally,
+hooks on every push to `main` and on every pull request. It tests against two server versions:
+the `dev` branch and the latest release (what the Home Assistant add-on runs). A weekly
+scheduled run catches server changes that break the provider. To test against a specific
+server branch or tag, start the workflow by hand and set `ma_ref`. Locally,
 `MA_REF=<branch or tag> scripts/dev_setup.sh` does the same for a new checkout.
 
 The checks against the real API are not part of CI, since they need an Il Post account.
