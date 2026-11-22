@@ -1,0 +1,12 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "[%key:common::config_entries::email::label%]",
+      "description": "Your Il Post account email address"
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "Your Il Post account password"
+    }
+  }
+}
