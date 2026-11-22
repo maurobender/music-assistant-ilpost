@@ -4,7 +4,7 @@
   "stage": "beta",
   "name": "Il Post",
   "description": "Listen to the podcasts of Il Post, with your listening progress kept in sync.",
-  "codeowners": [],
+  "codeowners": ["@maurobender"],
   "requirements": [],
   "provides": ["podcast"],
   "documentation": "https://github.com/music-assistant/support/discussions",
