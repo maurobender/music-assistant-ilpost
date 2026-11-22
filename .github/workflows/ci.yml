@@ -10,8 +10,8 @@ on:
   workflow_dispatch:
     inputs:
       ma_ref:
-        description: Music Assistant server branch or tag to test against
-        default: dev
+        description: Music Assistant server branch or tag to test against (empty for dev and stable)
+        default: ""
 
 permissions:
   contents: read
@@ -22,13 +22,34 @@ concurrency:
 
 jobs:
   check:
-    name: Lint, type check and test
+    name: Check against server ${{ matrix.server }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # dev is what the provider is developed against; stable is the latest release, which
+        # is what the Home Assistant add-on runs
+        server: [dev, stable]
     env:
       MA_DIR: ${{ github.workspace }}/../music-assistant-server
-      MA_REF: ${{ inputs.ma_ref || 'dev' }}
     steps:
+      - name: Pick the server version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.ma_ref }}
+          SERVER: ${{ matrix.server }}
+        run: |
+          if [[ -n "$REQUESTED" ]]; then
+            ref="$REQUESTED"
+          elif [[ "$SERVER" == stable ]]; then
+            ref="$(gh release view --repo music-assistant/server --json tagName --jq .tagName)"
+          else
+            ref=dev
+          fi
+          echo "Testing against server $ref"
+          echo "MA_REF=$ref" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
